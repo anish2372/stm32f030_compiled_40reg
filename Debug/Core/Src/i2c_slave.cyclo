@@ -1,0 +1,5 @@
+../Core/Src/i2c_slave.c:23:6:process_data	9
+../Core/Src/i2c_slave.c:101:6:HAL_I2C_ListenCpltCallback	1
+../Core/Src/i2c_slave.c:121:6:HAL_I2C_AddrCallback	2
+../Core/Src/i2c_slave.c:137:6:HAL_I2C_SlaveRxCpltCallback	4
+../Core/Src/i2c_slave.c:158:6:HAL_I2C_ErrorCallback	3
