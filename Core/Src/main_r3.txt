@@ -1,11 +1,27 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2024 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "i2c_slave.h"
 #include "string.h"
 #include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h> // Add this line
+#include <stdio.h> // For sprintf (debugging, though not explicitly used in final logic, good to keep for potential debug)
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -16,22 +32,20 @@
 /* USER CODE BEGIN PTD */
 /**
   * @brief  Kalman Filter structure definition.
+  * This structure holds the parameters for a single-variable Kalman filter.
   */
 typedef struct {
-    float Q;  // Process noise covariance
-    float R;  // Measurement noise covariance
-    float P;  // Estimate error covariance
-    float K;  // Kalman gain
-    float x;  // Estimated state
+    float Q; // Process noise covariance: Represents the uncertainty in the system model.
+    float R; // Measurement noise covariance: Represents the uncertainty in the measurement.
+    float P; // Estimate error covariance: Uncertainty of the current state estimate.
+    float K; // Kalman gain: Blends the prediction and the new measurement.
+    float x; // Estimated state: The current best estimate of the variable.
 } KalmanFilter;
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ADC_CHANNELS 8
-#define NOISE_THRESHOLD 10       // Raw ADC noise threshold
-#define CALIBRATION_SAMPLES 100  // Samples for zero-current calibration
+#define ADC_CHANNELS 8 // Define the number of ADC channels being used
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,33 +59,25 @@ DMA_HandleTypeDef hdma_adc;
 
 I2C_HandleTypeDef hi2c1;
 
-volatile bool adc_done = false;
-
-
 /* USER CODE BEGIN PV */
-uint32_t ADC_Reads[ADC_CHANNELS];
-extern uint32_t I2C_REGISTERS[48];
-uint32_t lastButtonState[ADC_CHANNELS] = {0};
+uint32_t ADC_Reads[ADC_CHANNELS]; // Array to store ADC values from DMA (8 channels)
+extern uint32_t I2C_REGISTERS[41]; // External declaration for I2C registers (assuming defined in i2c_slave.h)
+uint32_t lastButtonState[ADC_CHANNELS] = {0};  // To keep track of the last state of buttons (8 buttons)
 
-// ADC processing variables
-float kalman_output[ADC_CHANNELS] = {0.0f};
-float moving_avg[ADC_CHANNELS] = {0.0f};
-uint32_t max_value[ADC_CHANNELS] = {0};
-uint16_t zero_count[ADC_CHANNELS] = {0};
-uint32_t currentButtonState[ADC_CHANNELS];
-bool sampling[ADC_CHANNELS] = {false};
-bool calibration_done = false;
-uint32_t calibration_data[ADC_CHANNELS] = {0};
+// Variables for ADC sampling and processing (not directly used for Kalman, but part of original logic)
+uint32_t sample_sum[ADC_CHANNELS] = {0}; // Array to hold sums for averaging if needed
+uint16_t sample_count[ADC_CHANNELS] = {0}; // Array to hold counts for averaging if needed
+float average_value[ADC_CHANNELS] = {0.0}; // Array to hold average values if needed
+bool sampling[ADC_CHANNELS] = {false}; // Array to track sampling state for each channel
+uint32_t max_value[ADC_CHANNELS] = {0}; // Array to store the maximum value for each channel
+uint16_t zero_count[ADC_CHANNELS] = {0}; // Counter for continuous zero readings
+uint32_t currentButtonState[ADC_CHANNELS]; // Array to store current button states
 
-// Kalman Filters for each ADC channel
+// Define an array of pins to map to the corresponding button/LED outputs
+const uint16_t ledPins[ADC_CHANNELS] = { GPIO_PIN_0, GPIO_PIN_1, GPIO_PIN_2, GPIO_PIN_10, GPIO_PIN_11, GPIO_PIN_12, GPIO_PIN_13, GPIO_PIN_14 };
+
+// Kalman Filter instances for each of the 8 ADC channels (specifically for registers 32-39)
 KalmanFilter kalmanFilters[ADC_CHANNELS];
-
-// LED pin mapping
-const uint16_t ledPins[ADC_CHANNELS] = {
-    GPIO_PIN_0, GPIO_PIN_1, GPIO_PIN_2,
-    GPIO_PIN_10, GPIO_PIN_11, GPIO_PIN_12,
-    GPIO_PIN_13, GPIO_PIN_14
-};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -81,62 +87,69 @@ static void MX_DMA_Init(void);
 static void MX_ADC_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-void Kalman_Init(KalmanFilter *kf, float q, float r);
-float Kalman_Update(KalmanFilter *kf, float measurement);
-void Perform_Calibration(void);
+void ADC_Select_Channel(uint32_t channel); // Function to select ADC channel (not used with DMA scan mode)
+void Kalman_Init(KalmanFilter *kf, float q, float r); // Initializes a Kalman filter instance
+float Kalman_Update(KalmanFilter *kf, float measurement); // Updates the Kalman filter with a new measurement
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 /**
-  * @brief Initializes Kalman Filter
+  * @brief Selects the specified ADC channel for conversion.
+  * Note: This function is typically used for single-channel conversions.
+  * In this code, ADC is configured for scan mode with DMA, so individual
+  * channel selection via this function is not actively used in the main loop.
+  * @param channel: The ADC channel to select (e.g., ADC_CHANNEL_0).
+  * @retval None
+  */
+void ADC_Select_Channel(uint32_t channel)
+{
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel = channel;
+    sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
+    sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5; // Set sampling time
+
+    if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
+    {
+        Error_Handler(); // Handle error if configuration fails
+    }
+}
+
+/**
+  * @brief Initializes a single Kalman Filter instance.
+  * @param kf: Pointer to the KalmanFilter structure to initialize.
+  * @param q: Process noise covariance (Q). A higher Q means the filter trusts the model less.
+  * @param r: Measurement noise covariance (R). A higher R means the filter trusts the measurement less.
+  * @retval None
   */
 void Kalman_Init(KalmanFilter *kf, float q, float r) {
     kf->Q = q;
     kf->R = r;
-    kf->P = 1.0f;
-    kf->x = 0.0f;
+    kf->P = 1.0f; // Initial estimate error covariance (P). A large initial P indicates high uncertainty.
+    kf->x = 0.0f; // Initial state estimate (x). Start with 0 or a reasonable initial guess.
 }
 
 /**
-  * @brief Updates Kalman Filter with new measurement
+  * @brief Updates the Kalman Filter with a new measurement and returns the filtered estimate.
+  * @param kf: Pointer to the KalmanFilter structure to update.
+  * @param measurement: The current raw measurement value.
+  * @retval float: The filtered (smoothed) state estimate.
   */
 float Kalman_Update(KalmanFilter *kf, float measurement) {
-    // Prediction update
+    // Prediction step: Project the current state and error covariance forward in time.
+    // For a constant system, the state prediction is simply the previous state estimate.
+    // The error covariance grows by the process noise.
     kf->P = kf->P + kf->Q;
 
-    // Measurement update
+    // Update step: Incorporate the new measurement.
+    // Calculate Kalman Gain (K): Determines how much the new measurement influences the state estimate.
     kf->K = kf->P / (kf->P + kf->R);
+    // Update state estimate (x): Weighted average of the predicted state and the new measurement.
     kf->x = kf->x + kf->K * (measurement - kf->x);
+    // Update estimate error covariance (P): Reduce uncertainty after incorporating the measurement.
     kf->P = (1 - kf->K) * kf->P;
 
     return kf->x;
-}
-
-/**
-  * @brief Performs zero-current calibration
-  */
-void Perform_Calibration(void) {
-    uint32_t sums[ADC_CHANNELS] = {0};
-
-    // Take multiple samples
-    for (int s = 0; s < CALIBRATION_SAMPLES; s++) {
-        HAL_ADC_Start_DMA(&hadc, ADC_Reads, ADC_CHANNELS);
-        HAL_Delay(1);
-
-        for (int i = 0; i < ADC_CHANNELS; i++) {
-            sums[i] += ADC_Reads[i];
-        }
-        HAL_Delay(5);
-    }
-
-    // Calculate averages
-    for (int i = 0; i < ADC_CHANNELS; i++) {
-        calibration_data[i] = sums[i] / CALIBRATION_SAMPLES;
-        I2C_REGISTERS[40 + i] = calibration_data[i]; // Store in registers 40-47
-    }
-
-    calibration_done = true;
 }
 /* USER CODE END 0 */
 
@@ -159,120 +172,129 @@ int main(void)
   MX_DMA_Init();
   MX_ADC_Init();
   MX_I2C1_Init();
-
   /* USER CODE BEGIN 2 */
-  // Enable I2C slave listen mode
-  if(HAL_I2C_EnableListen_IT(&hi2c1) != HAL_OK) {
-    Error_Handler();
+  // Enable I2C slave listen mode for incoming master requests
+  if(HAL_I2C_EnableListen_IT(&hi2c1) != HAL_OK)
+  {
+  	  Error_Handler(); // Handle error if I2C listen mode cannot be enabled
   }
 
-  // Initialize Kalman Filters with tuned parameters
+  // Initialize Kalman Filters for each of the 8 ADC channels.
+  // Q (process noise) and R (measurement noise) values can be tuned for desired smoothness.
+  // Higher Q makes the filter more responsive to changes, but less smooth.
+  // Higher R makes the filter smoother, but less responsive to true changes.
   for (int i = 0; i < ADC_CHANNELS; i++) {
-    Kalman_Init(&kalmanFilters[i], 1.0f, 100.0f);
-//	  Kalman_Init(&kalmanFilters[i], 4.0f, 50.0f);
+      Kalman_Init(&kalmanFilters[i], 10.0f, 100.0f); // Example values, tune as needed
   }
-
-  // Perform initial calibration
-  Perform_Calibration();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1) {
-    // Start ADC conversion
-//    HAL_ADC_Start_DMA(&hadc, ADC_Reads, ADC_CHANNELS);
-//    HAL_Delay(1);  // Allow sampling to complete
-	  adc_done = false;
-	  HAL_ADC_Start_DMA(&hadc, ADC_Reads, ADC_CHANNELS);
-	  while (!adc_done);  // Wait here until DMA completes safely
-	  for (int i = 0; i < ADC_CHANNELS; i++) {
-	      uint32_t current_sample = ADC_Reads[i];
-	      int32_t adjusted_sample = (int32_t)current_sample - (int32_t)calibration_data[i];
+  while (1)
+    {
+        // Start ADC conversion using DMA for all 8 channels.
+        HAL_ADC_Start_DMA(&hadc, ADC_Reads, ADC_CHANNELS);
+        HAL_Delay(1); // Short delay to allow for sampling to begin and DMA transfer to start
 
-	      // Save raw ADC data to registers 0–7
-	      __disable_irq();
-	      I2C_REGISTERS[i] = current_sample;
-	      __enable_irq();
+        // Process each ADC channel's reading
+        for (int i = 0; i < ADC_CHANNELS; i++) {
+            uint32_t current_sample = ADC_Reads[i]; // Get the raw ADC value for the current channel
 
-	      // Zero detection: if adjusted value is near zero
-	      if (abs(adjusted_sample) < NOISE_THRESHOLD) {
-	          zero_count[i]++;
-	          if (zero_count[i] >= 5) {  // 5 consecutive near-zero readings
-	              max_value[i] = 0;
-	              Kalman_Init(&kalmanFilters[i], 1.0f, 100.0f);
-	          }
-	      } else {
-	          zero_count[i] = 0;
-	          if ((uint32_t)abs(adjusted_sample) > max_value[i]) {
-	              max_value[i] = (uint32_t)abs(adjusted_sample);
-	          } else {
-	              max_value[i] *= 0.998f;  // decay
-	              if (max_value[i] < 1) max_value[i] = 0;
-	          }
-	      }
+            // Update maximum value for the current channel if the current sample is greater
+            if (current_sample > max_value[i]) {
+                max_value[i] = current_sample;
+            }
 
-	      float filtered_peak = Kalman_Update(&kalmanFilters[i], (float)max_value[i]);
-	      float amps = filtered_peak * 0.00403f;
-	      __disable_irq();
-	      I2C_REGISTERS[32 + i] = (uint32_t)(amps * 1000.0f);  // store in mA
-	      __enable_irq();
-	  }
+            // Scale the raw maximum ADC value to the desired "amps" range (1748.879 is a scaling factor)
+            float scaled_max_value = (float)(max_value[i] * 1748.879);
+            // Apply Kalman filter to the scaled maximum value to get a smooth estimate
+            float filtered_value = Kalman_Update(&kalmanFilters[i], scaled_max_value);
 
+            // Store the calculated and filtered maximum value (as uint32_t) in I2C_REGISTERS for master to read.
+            // These correspond to registers 32-39.
+            I2C_REGISTERS[i + 32] = (uint32_t)filtered_value;
 
+            // Logic for handling zero readings and resetting max values/sampling state
+            if (current_sample == 0) {
+                zero_count[i]++; // Increment zero counter
+                // If continuous zeros exceed a threshold, reset max value and corresponding register
+                if (zero_count[i] > 5) { // Threshold for detecting continuous zeros (e.g., 5 consecutive zeros)
+                    max_value[i] = 0; // Reset max value to zero if zeros are continuous
+                    I2C_REGISTERS[i + 32] = 0; // Also reset the filtered register to zero
+                    // Reset Kalman filter state to avoid carrying over old estimates when input goes to zero
+                    Kalman_Init(&kalmanFilters[i], 10.0f, 100.0f); // Re-initialize Kalman filter
+                }
+                I2C_REGISTERS[i] = 0; // Set current raw ADC register to 0
+                sampling[i] = false; // Reset the sampling state for this channel
+                sample_sum[i] = 0; // Reset sum for averaging
+                sample_count[i] = 0; // Reset count for averaging
+            } else {
+                zero_count[i] = 0; // Reset zero count when a non-zero sample is detected
+                // Check for the start of sampling (when a non-zero value is first detected after zeros)
+                if (!sampling[i]) {
+                    sampling[i] = true; // Start sampling for this channel
+                    sample_sum[i] = 0; // Reset sum for new samples
+                    sample_count[i] = 0; // Reset count for new samples
+                }
 
-    // Process each ADC channel
+                if (sampling[i]) {
+                    // Accumulate samples for averaging (if averaging logic is needed elsewhere)
+                    sample_sum[i] += current_sample;
+                    sample_count[i]++;
+                    I2C_REGISTERS[i] = current_sample; // Store current raw ADC value in registers 0-7
+                }
+            }
 
+            // Debug output for the last channel (channel 7)
+            if (i == 7) {
+                printf("Raw ADC[7]: %lu, Max[7]: %lu, Scaled Max[7]: %.2f, Filtered[7]: %.2f, I2C_REG[39]: %lu\r\n",
+                       ADC_Reads[7], max_value[7], scaled_max_value, filtered_value, I2C_REGISTERS[39]);
+            }
+        }
 
-    // [Rest of your existing code for digital inputs and button handling]
-    // ... (Unchanged from your original implementation) ...
-    // Update digital input feedback values to I2C registers 16-23
-    __disable_irq();
-    // write I2C_REGISTERS[x]
+        // Update digital input feedback values to I2C registers 16-23
+        I2C_REGISTERS[16] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_15);
+        I2C_REGISTERS[17] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_14);
+        I2C_REGISTERS[18] = HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_1);
+        I2C_REGISTERS[19] = HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_0);
+        I2C_REGISTERS[20] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_15);
+        I2C_REGISTERS[21] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8);
+        I2C_REGISTERS[22] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9);
+        I2C_REGISTERS[23] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10);
 
-           I2C_REGISTERS[16] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_15);
-           I2C_REGISTERS[17] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_14);
-           I2C_REGISTERS[18] = HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_1);
-           I2C_REGISTERS[19] = HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_0);
-           I2C_REGISTERS[20] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_15);
-           I2C_REGISTERS[21] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8);
-           I2C_REGISTERS[22] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9);
-           I2C_REGISTERS[23] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10);
+        // Read the button states (GPIO pins configured as inputs with pull-down)
+        currentButtonState[0] = HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_7);   // PF7
+        currentButtonState[1] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_15);  // PA15
+        currentButtonState[2] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3);   // PB3
+        currentButtonState[3] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4);   // PB4
+        currentButtonState[4] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5);   // PB5
+        currentButtonState[5] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8);   // PB8
+        currentButtonState[7] =  HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9);   // PB9
+        currentButtonState[6] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);  // PC13 (Note: PC13 is out of order here, but consistent with original code)
 
-           // Read the button states (GPIO pins configured as inputs with pull-down)
-           currentButtonState[0] = HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_7);   // PF7
-           currentButtonState[1] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_15);  // PA15
-           currentButtonState[2] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3);   // PB3
-           currentButtonState[3] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4);   // PB4
-           currentButtonState[4] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5);   // PB5
-           currentButtonState[5] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8);   // PB8
-           currentButtonState[6] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);  // PC13 (Note: PC13 is out of order here, but consistent with original code)
-           currentButtonState[7] =  HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9);   // PB9
+        // Update I2C_REGISTERS 24-31 with the current button states using memcpy for efficiency
+        memcpy(&I2C_REGISTERS[24], currentButtonState, ADC_CHANNELS * sizeof(uint32_t));
 
+        // Toggle LEDs based on button states (I2C_REGISTERS 8-15)
+        // This implements a simple toggle functionality for LEDs linked to button presses.
+        for (int i = 0; i < ADC_CHANNELS; i++) {
+            // Check for a falling edge (button pressed: was HIGH, now LOW)
+            if (currentButtonState[i] == GPIO_PIN_RESET && lastButtonState[i] == GPIO_PIN_SET) {
+                // Toggle the corresponding LED state in I2C_REGISTERS (0 to 1, or 1 to 0)
+                I2C_REGISTERS[8 + i] ^= 1; // XOR with 1 to toggle
+                // Update the physical state of the LEDs based on the toggled register value
+                HAL_GPIO_WritePin(GPIOB, ledPins[i], I2C_REGISTERS[8 + i] ? GPIO_PIN_SET : GPIO_PIN_RESET);
+            }
+            lastButtonState[i] = currentButtonState[i]; // Update last button state for the next iteration
+        }
 
-           // Update I2C_REGISTERS 24-31 with the current button states using memcpy for efficiency
-           memcpy(&I2C_REGISTERS[24], currentButtonState, ADC_CHANNELS * sizeof(uint32_t));
-
-           // Toggle LEDs based on button states (I2C_REGISTERS 8-15)
-           // This implements a simple toggle functionality for LEDs linked to button presses.
-           for (int i = 0; i < ADC_CHANNELS; i++) {
-               // Check for a falling edge (button pressed: was HIGH, now LOW)
-               if (currentButtonState[i] == GPIO_PIN_RESET && lastButtonState[i] == GPIO_PIN_SET) {
-                   // Toggle the corresponding LED state in I2C_REGISTERS (0 to 1, or 1 to 0)
-                   I2C_REGISTERS[8 + i] ^= 1; // XOR with 1 to toggle
-                   // Update the physical state of the LEDs based on the toggled register value
-                   HAL_GPIO_WritePin(GPIOB, ledPins[i], I2C_REGISTERS[8 + i] ? GPIO_PIN_SET : GPIO_PIN_RESET);
-               }
-               lastButtonState[i] = currentButtonState[i]; // Update last button state for the next iteration
-           }
-           __enable_irq();
-    HAL_Delay(100);  // Main loop delay
-  }
+        HAL_Delay(100);  // Delay of 100ms between main loop iterations to control execution frequency
+    }
   /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
   /* USER CODE END 3 */
 }
-
 
 /**
   * @brief System Clock Configuration
@@ -535,10 +557,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-    adc_done = true;
-}
 // This section is typically for user-defined callback functions or other custom code.
 // For example, HAL_ADC_ConvCpltCallback for DMA completion, or HAL_I2C_SlaveRxCpltCallback for I2C.
 /* USER CODE END 4 */

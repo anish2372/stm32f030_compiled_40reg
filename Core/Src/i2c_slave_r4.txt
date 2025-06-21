@@ -12,7 +12,7 @@
 //uint32_t I2C_REGISTERS[48] = {0}; // Declare 41 registers
 
 #define REGISTER_COUNT 48
-volatile uint32_t I2C_REGISTERS[REGISTER_COUNT] = {0};
+uint32_t I2C_REGISTERS[REGISTER_COUNT] = {0};
 extern uint8_t last_reg_address; // In i2c_slave.h
 
 extern I2C_HandleTypeDef hi2c1;

@@ -1,5 +1,5 @@
-../Core/Src/i2c_slave.c:23:6:process_data	48	static
-../Core/Src/i2c_slave.c:101:6:HAL_I2C_ListenCpltCallback	16	static
-../Core/Src/i2c_slave.c:121:6:HAL_I2C_AddrCallback	16	static
-../Core/Src/i2c_slave.c:137:6:HAL_I2C_SlaveRxCpltCallback	16	static
-../Core/Src/i2c_slave.c:158:6:HAL_I2C_ErrorCallback	24	static
+../Core/Src/i2c_slave.c:28:6:process_data	48	static,ignoring_inline_asm
+../Core/Src/i2c_slave.c:93:6:HAL_I2C_ListenCpltCallback	16	static
+../Core/Src/i2c_slave.c:128:6:HAL_I2C_AddrCallback	24	static
+../Core/Src/i2c_slave.c:146:6:HAL_I2C_SlaveRxCpltCallback	16	static
+../Core/Src/i2c_slave.c:173:6:HAL_I2C_ErrorCallback	24	static

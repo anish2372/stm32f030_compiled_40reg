@@ -50,7 +50,7 @@ volatile bool adc_done = false;
 
 /* USER CODE BEGIN PV */
 uint32_t ADC_Reads[ADC_CHANNELS];
-extern uint32_t I2C_REGISTERS[48];
+extern uint32_t I2C_REGISTERS[41];
 uint32_t lastButtonState[ADC_CHANNELS] = {0};
 
 // ADC processing variables
